@@ -245,6 +245,15 @@ header h1 {
     color: var(--text-secondary);
 }
 
+.source-link {
+    color: var(--primary-color);
+    text-decoration: none;
+}
+
+.source-link:hover {
+    text-decoration: underline;
+}
+
 /* Markdown formatting styles */
 .message-content h1,
 .message-content h2,
@@ -446,8 +455,10 @@ header h1 {
 }
 
 /* Sidebar Headers */
+.new-chat-button,
 .stats-header,
 .suggested-header {
+    font-family: inherit;
     font-size: 0.875rem;
     font-weight: 600;
     color: var(--text-secondary);
@@ -462,14 +473,74 @@ header h1 {
     letter-spacing: 0.5px;
 }
 
+.new-chat-button:focus,
 .stats-header:focus,
 .suggested-header:focus {
     color: var(--primary-color);
 }
 
+.new-chat-button:hover,
 .stats-header:hover,
 .suggested-header:hover {
     color: var(--primary-color);
+}
+
+/* New Chat Button & Chat List */
+.new-chat-button {
+    width: 100%;
+    text-align: left;
+}
+
+.chat-list {
+    margin-top: 0.5rem;
+}
+
+.chat-list-item {
+    display: block;
+    width: 100%;
+    font-family: inherit;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    text-align: left;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--border-color);
+    border-radius: 0;
+    padding: 0.5rem 0.25rem;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: background 0.2s ease, color 0.2s ease;
+}
+
+.chat-list-item:last-child {
+    border-bottom: none;
+}
+
+.chat-list-item:hover {
+    background: var(--surface-hover);
+}
+
+.chat-list-item.active {
+    color: var(--primary-color);
+}
+
+.chat-list-item.pending::before {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 0.5rem;
+    border-radius: 50%;
+    background: var(--primary-color);
+    vertical-align: middle;
+    animation: chat-pending-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes chat-pending-pulse {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
 }
 
 .stats-header::-webkit-details-marker,

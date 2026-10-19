@@ -1,11 +1,18 @@
 // API base URL - use relative path to work from any host
 const API_URL = '/api';
 
+// localStorage key for saved chats
+const STORAGE_KEY = 'courseChats';
+
+const WELCOME_MESSAGE = 'Welcome to the Course Materials Assistant! I can help you with questions about courses, lessons and specific content. What would you like to know?';
+
 // Global state
-let currentSessionId = null;
+// Each chat: { id, sessionId, title, messages: [{ content, type, sources }], pending }
+let chats = [];
+let activeChatId = null;
 
 // DOM elements
-let chatMessages, chatInput, sendButton, totalCourses, courseTitles;
+let chatMessages, chatInput, sendButton, totalCourses, courseTitles, newChatButton, chatList;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -15,9 +22,17 @@ document.addEventListener('DOMContentLoaded', () => {
     sendButton = document.getElementById('sendButton');
     totalCourses = document.getElementById('totalCourses');
     courseTitles = document.getElementById('courseTitles');
-    
+    newChatButton = document.getElementById('newChatButton');
+    chatList = document.getElementById('chatList');
+
     setupEventListeners();
-    createNewSession();
+    loadChats();
+    if (getActiveChat()) {
+        renderActiveChat();
+        renderChatList();
+    } else {
+        createNewSession();
+    }
     loadCourseStats();
 });
 
@@ -28,8 +43,13 @@ function setupEventListeners() {
     chatInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') sendMessage();
     });
-    
-    
+
+    // New chat
+    newChatButton.addEventListener('click', () => {
+        createNewSession();
+        chatInput.focus();
+    });
+
     // Suggested questions
     document.querySelectorAll('.suggested-item').forEach(button => {
         button.addEventListener('click', (e) => {
@@ -44,20 +64,21 @@ function setupEventListeners() {
 // Chat Functions
 async function sendMessage() {
     const query = chatInput.value.trim();
-    if (!query) return;
+    const chat = getActiveChat();
+    if (!query || !chat || chat.pending) return;
 
-    // Disable input
     chatInput.value = '';
-    chatInput.disabled = true;
-    sendButton.disabled = true;
 
-    // Add user message
-    addMessage(query, 'user');
-
-    // Add loading message - create a unique container for it
-    const loadingMessage = createLoadingMessage();
-    chatMessages.appendChild(loadingMessage);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    // Record the question in the chat it was asked in. All later updates go to
+    // this chat object, even if the user switches to another chat meanwhile.
+    if (chat.messages.length === 0) {
+        chat.title = query.length > 40 ? `${query.slice(0, 40)}…` : query;
+    }
+    chat.messages.push({ content: query, type: 'user', sources: null });
+    chat.pending = true;
+    saveChats();
+    renderActiveChat();
+    renderChatList();
 
     try {
         const response = await fetch(`${API_URL}/query`, {
@@ -67,31 +88,32 @@ async function sendMessage() {
             },
             body: JSON.stringify({
                 query: query,
-                session_id: currentSessionId
+                session_id: chat.sessionId
             })
         });
 
         if (!response.ok) throw new Error('Query failed');
 
         const data = await response.json();
-        
+
         // Update session ID if new
-        if (!currentSessionId) {
-            currentSessionId = data.session_id;
+        if (!chat.sessionId) {
+            chat.sessionId = data.session_id;
         }
 
-        // Replace loading message with response
-        loadingMessage.remove();
-        addMessage(data.answer, 'assistant', data.sources);
+        chat.messages.push({ content: data.answer, type: 'assistant', sources: data.sources });
 
     } catch (error) {
-        // Replace loading message with error
-        loadingMessage.remove();
-        addMessage(`Error: ${error.message}`, 'assistant');
+        chat.messages.push({ content: `Error: ${error.message}`, type: 'assistant', sources: null });
     } finally {
-        chatInput.disabled = false;
-        sendButton.disabled = false;
-        chatInput.focus();
+        chat.pending = false;
+        saveChats();
+        renderChatList();
+        // Only redraw the chat area if this chat is still the one on screen
+        if (chat.id === activeChatId) {
+            renderActiveChat();
+            chatInput.focus();
+        }
     }
 }
 
@@ -125,7 +147,7 @@ function addMessage(content, type, sources = null, isWelcome = false) {
         html += `
             <details class="sources-collapsible">
                 <summary class="sources-header">Sources</summary>
-                <div class="sources-content">${sources.join(', ')}</div>
+                <div class="sources-content">${sources.map(renderSource).join(', ')}</div>
             </details>
         `;
     }
@@ -137,6 +159,15 @@ function addMessage(content, type, sources = null, isWelcome = false) {
     return messageId;
 }
 
+// Render one source as a link when it has a URL.
+// Older saved chats store sources as plain strings, so accept those too.
+function renderSource(source) {
+    if (typeof source === 'string') return escapeHtml(source);
+    const text = escapeHtml(source.text);
+    if (!source.url) return text;
+    return `<a class="source-link" href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+}
+
 // Helper function to escape HTML for user messages
 function escapeHtml(text) {
     const div = document.createElement('div');
@@ -146,10 +177,95 @@ function escapeHtml(text) {
 
 // Removed removeMessage function - no longer needed since we handle loading differently
 
-async function createNewSession() {
-    currentSessionId = null;
+// Chat Management
+
+function getActiveChat() {
+    return chats.find(chat => chat.id === activeChatId) || null;
+}
+
+function loadChats() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+        if (saved && Array.isArray(saved.chats)) {
+            // Requests in flight were lost on reload, so nothing is pending now
+            chats = saved.chats.map(chat => ({ ...chat, pending: false }));
+            activeChatId = saved.activeChatId;
+        }
+    } catch (error) {
+        console.error('Error loading saved chats:', error);
+        chats = [];
+        activeChatId = null;
+    }
+}
+
+function saveChats() {
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ chats, activeChatId }));
+    } catch (error) {
+        console.error('Error saving chats:', error);
+    }
+}
+
+function createNewSession() {
+    // Reuse the current chat if it's still empty, so repeated clicks don't pile up empty chats
+    const current = getActiveChat();
+    if (!current || current.messages.length > 0) {
+        const chat = {
+            id: Date.now(),
+            sessionId: null,
+            title: 'New chat',
+            messages: [],
+            pending: false
+        };
+        chats.unshift(chat);
+        activeChatId = chat.id;
+    }
+    saveChats();
+    renderActiveChat();
+    renderChatList();
+}
+
+function switchChat(chatId) {
+    activeChatId = chatId;
+    saveChats();
+    renderActiveChat();
+    renderChatList();
+}
+
+function renderActiveChat() {
+    const chat = getActiveChat();
     chatMessages.innerHTML = '';
-    addMessage('Welcome to the Course Materials Assistant! I can help you with questions about courses, lessons and specific content. What would you like to know?', 'assistant', null, true);
+    addMessage(WELCOME_MESSAGE, 'assistant', null, true);
+    if (!chat) return;
+
+    chat.messages.forEach(message => {
+        addMessage(message.content, message.type, message.sources);
+    });
+
+    if (chat.pending) {
+        chatMessages.appendChild(createLoadingMessage());
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    // Input is only locked while this chat is waiting for a reply
+    chatInput.disabled = chat.pending;
+    sendButton.disabled = chat.pending;
+}
+
+function renderChatList() {
+    chatList.innerHTML = '';
+    chats
+        .filter(chat => chat.messages.length > 0)
+        .forEach(chat => {
+            const item = document.createElement('button');
+            item.className = 'chat-list-item';
+            if (chat.id === activeChatId) item.classList.add('active');
+            if (chat.pending) item.classList.add('pending');
+            item.textContent = chat.title;
+            item.title = chat.title;
+            item.addEventListener('click', () => switchChat(chat.id));
+            chatList.appendChild(item);
+        });
 }
 
 // Load course statistics
