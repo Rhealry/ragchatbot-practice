@@ -1,3 +1,4 @@
+import re
 import chromadb
 from chromadb.config import Settings
 from typing import List, Dict, Any, Optional
@@ -33,7 +34,14 @@ class SearchResults:
 
 class VectorStore:
     """Vector storage using ChromaDB for course content and metadata"""
-    
+
+    # Max embedding distance for a course name match. Measured on the current catalog:
+    # real partial names score up to ~0.95, unrelated names from ~1.3 upward.
+    COURSE_MATCH_MAX_DISTANCE = 1.0
+
+    # Words too generic to identify a course in the keyword fallback
+    COURSE_NAME_STOPWORDS = {"course", "courses", "the", "a", "an", "of", "for", "and", "with", "to", "in", "on"}
+
     def __init__(self, chroma_path: str, embedding_model: str, max_results: int = 5):
         self.max_results = max_results
         # Initialize ChromaDB client
@@ -100,19 +108,32 @@ class VectorStore:
             return SearchResults.empty(f"Search error: {str(e)}")
     
     def _resolve_course_name(self, course_name: str) -> Optional[str]:
-        """Use vector search to find best matching course by name"""
+        """Find the course matching a name; return None if no course is a reasonable match"""
         try:
             results = self.course_catalog.query(
                 query_texts=[course_name],
                 n_results=1
             )
-            
+
+            # Accept the closest course only if it's actually close
             if results['documents'][0] and results['metadatas'][0]:
-                # Return the title (which is now the ID)
-                return results['metadatas'][0][0]['title']
+                if results['distances'][0][0] <= self.COURSE_MATCH_MAX_DISTANCE:
+                    # Return the title (which is now the ID)
+                    return results['metadatas'][0][0]['title']
         except Exception as e:
             print(f"Error resolving course name: {e}")
-        
+
+        # Fallback for short names like acronyms ("MCP"), which embed poorly:
+        # accept if a word of the name appears in exactly one course title
+        words = set(re.findall(r'[a-z0-9]+', course_name.lower())) - self.COURSE_NAME_STOPWORDS
+        if words:
+            matches = [
+                title for title in self.get_existing_course_titles()
+                if words & set(re.findall(r'[a-z0-9]+', title.lower()))
+            ]
+            if len(matches) == 1:
+                return matches[0]
+
         return None
     
     def _build_filter(self, course_title: Optional[str], lesson_number: Optional[int]) -> Optional[Dict]:
@@ -264,4 +285,24 @@ class VectorStore:
             return None
         except Exception as e:
             print(f"Error getting lesson link: {e}")
-    
+
+    def get_course_outline(self, course_name: str) -> Optional[Dict[str, Any]]:
+        """Get title, link, instructor and lesson list for the course best matching course_name"""
+        import json
+        course_title = self._resolve_course_name(course_name)
+        if not course_title:
+            return None
+        try:
+            results = self.course_catalog.get(ids=[course_title])
+            if results and 'metadatas' in results and results['metadatas']:
+                metadata = results['metadatas'][0]
+                return {
+                    "title": metadata.get('title'),
+                    "course_link": metadata.get('course_link'),
+                    "instructor": metadata.get('instructor'),
+                    "lessons": json.loads(metadata.get('lessons_json') or '[]')
+                }
+            return None
+        except Exception as e:
+            print(f"Error getting course outline: {e}")
+            return None
